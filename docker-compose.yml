@@ -1,0 +1,98 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: vulnguard
+      POSTGRES_USER: vulnguard
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U vulnguard -d vulnguard"]
+      interval: 10s
+      timeout: 5s
+      retries: 8
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - data
+
+  api:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      DATABASE_URL: postgresql+psycopg://vulnguard:${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in .env}@db:5432/vulnguard
+      VULNGUARD_ENV: production
+      VULNGUARD_COOKIE_SECURE: "true"
+    depends_on:
+      db:
+        condition: service_healthy
+    expose:
+      - "8000"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/api/v1/health', timeout=3)"]
+      interval: 20s
+      timeout: 5s
+      retries: 5
+    read_only: true
+    tmpfs:
+      - /tmp
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      edge:
+        ipv4_address: 172.29.128.3
+      data:
+
+  frontend:
+    build:
+      context: frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    expose:
+      - "8080"
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      - web
+
+  proxy:
+    image: caddy:2-alpine
+    restart: unless-stopped
+    environment:
+      VULNGUARD_HOST: ${VULNGUARD_HOST:?Set VULNGUARD_HOST in .env}
+    ports:
+      - "80:80"
+      - "443:443"
+      - "443:443/udp"
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+    depends_on:
+      - api
+      - frontend
+    security_opt:
+      - no-new-privileges:true
+    networks:
+      edge:
+        ipv4_address: 172.29.128.2
+      web:
+
+volumes:
+  postgres_data:
+  caddy_data:
+  caddy_config:
+
+networks:
+  edge:
+    ipam:
+      config:
+        - subnet: 172.29.128.0/24
+  web:
+  data:
+    internal: true
